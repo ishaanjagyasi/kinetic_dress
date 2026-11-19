@@ -15,18 +15,23 @@ N_RIB, R0 = 8, 0.045                           # rib count, crown pivot radius
 L = (0.060, 0.057, 0.053)                      # rib segment lengths (pin to pin)
 SEG_W, SEG_H = 0.006, 0.005                    # rib bar width (along pin) and height
 PIN_R, KNUCKLE_R = 0.002, 0.0032               # M4 shoulder pins, joint knuckle radius
-CA = (0.008, -0.004); CB = (0.004, 0.008)      # crossed four-bar pins: on input body / output body, from joint
+CA = (0.007, -0.0025); CB = (0.005, 0.005)      # crossed four-bar pins: on input body / output body, from joint
 TAIL, ROD = 0.012, 0.020                       # J1 lever behind pivot, pushrod length to runner
 SCREW_LEAD, MOTOR_RPM = 0.0005, 600            # M3 x 0.5 lead screw, N20 gearmotor speed under load
 ACC_T = 0.25                                   # motor ramp time
-TIP_GAP = 0.016                                # closed: rib tip centreline distance from the axis plane (A)
-STAND = 0.010                                  # fabric held this far behind rib centreline (convex side)
-FAB_IN, FAB_R, LOBE = 0.044, 0.222, 0.014      # fabric clamp radius (back-plate rim), radius at rib, scallop bulge
-SKIRT_R, PLATE_Y = 0.056, -0.044               # fabric rises from the back-plate rim to the rib plane by SKIRT_R
-NT, NRAD = 160, 30                             # fabric columns / rows
-PLEAT_K = 0.07                                 # pleat depth per metre of radius (open, heat-set)
-GSM, MASS_SCALE = 120.0, 1000.0                # fabric g/m2; masses and forces scaled together (dynamics unchanged)
-BEND, BEND_CREASE = 60.0, 6.0                  # calibrated: 4.0 cm Peirce bending length at 6 mm mesh
+TIP_GAP = 0.026                                # closed: rib tip centreline distance from the axis (room for the fabric inside)
+STAND = 0.009                                  # fabric line this far in front of the hinge-pin line (concave side, clear of couplers)
+CLIP_GAP = 0.010                               # clips stop this far from a joint; the fabric slackens there as the joint bends
+FAB_IN, FAB_R, LOBE = 0.058, 0.216, 0.008      # fabric inner edge (free, hugs the hub), radius at rib, scallop bulge
+PLATE_Y = -0.044                               # carrier back plate (runner guide rods end here)
+NT, ROW = 160, 0.0055                          # fabric columns, target row spacing
+PLEAT_K = 0.15                                 # pleat depth per metre of radius in the open state
+GSM, MASS_SCALE = 120.0, 1000.0                # base fabric g/m2; masses and forces scaled together (dynamics unchanged)
+BEND_FAB = 60.0                                # calibrated: 4.0 cm Peirce bending length at 120 g/m2, 6 mm mesh
+PET_T, PET_E, PET_RHO = 0.15e-3, 4.0e9, 1380.0 # PET film panels bonded between creases (thickness, modulus, density)
+G_FAB = GSM / 1000 * 9.81 * 0.04 ** 3          # fabric flexural rigidity from the bending length, N m
+BEND_PANEL = BEND_FAB * (1 + PET_E * PET_T ** 3 / 12 / G_FAB)   # creases stay bare fabric (BEND_FAB)
+GSM_PANEL = GSM + PET_RHO * PET_T * 1000       # panel areal density, g/m2
 DESIGNS = dict(
     A=dict(beta=0.0, spin_turns=0.0, t_close=2.5, t_hold=2.5, t_end=2.5),
     B=dict(beta=25.0, spin_turns=2.0, t_close=2.5, t_hold=5.6, t_end=2.0, spin_rpm=30.0, spin_ramp=0.6))
@@ -61,6 +66,11 @@ def closed_q1(rho):
     for q in np.arange(0.5, 1.4, 0.0005):
         if s0 + rib_pose(q)[2][3][0] <= TIP_GAP: return q
     raise RuntimeError("rib never closes")
+
+def clip_x(i):  # clip positions along segment i (from its joint), kept CLIP_GAP away from bending joints
+    lo = FAB_IN - R0 + 0.004 if i == 0 else CLIP_GAP
+    hi = L[i] - 0.003 if i == 2 else L[i] - CLIP_GAP
+    return np.linspace(lo, hi, max(2, int((hi - lo) / 0.008) + 1))
 
 def ease_profile(dist, vmax, acc_t):
     """trapezoidal velocity profile: returns time span and position(t)"""
@@ -148,7 +158,7 @@ def build(design, path):
         base.box(-0.006, 0.006, -0.005, 0.005, 0.047, 0.060, AX @ Matrix.Translation((0.044, 0, 0)))  # N20 spin motor, offset
     base.obj("Base", M_HUB)
     # rotating carrier: front crown ring, back plate, guide rods, lead screw, fold motor (N20, 12x10 mm)
-    car = MB().cyl(0.041, 0.0035, 0.0065, AXW, 48, rin=0.022).cyl(FAB_IN, PLATE_Y - 0.003, PLATE_Y, AXW, 48)
+    car = MB().cyl(0.041, 0.0035, 0.0065, AXW, 48, rin=0.022).cyl(0.044, PLATE_Y - 0.003, PLATE_Y, AXW, 48)
     for j in range(3):
         th = 2 * math.pi * j / 3 + 0.3
         car.cyl(0.0015, PLATE_Y, 0.0035, AXW @ Matrix.Translation((0.018 * math.cos(th), 0.018 * math.sin(th), 0)), 10)
@@ -170,11 +180,10 @@ def build(design, path):
         F = RF[k]
         for zs in (-1, 1):
             car.box(-0.004, 0.005, -0.006, 0.0065, zs * 0.0062 - 0.0009, zs * 0.0062 + 0.0009, F)   # cheeks hold J1, hang from ring
-            car.box(-0.004, CA[0] + 0.003, CA[1] - 0.003, CA[1] + 0.003, zs * 0.0074 - 0.0006, zs * 0.0074 + 0.0006, F)
-        car.cyl(PIN_R, -0.0075, 0.0075, F, 12).cyl(PIN_R * 0.8, -0.0062, 0.0062, F @ Matrix.Translation((*CA, 0)), 10)
+            car.box(-0.004, CA[0] + 0.0018, CA[1] - 0.0014, 0.003, zs * 0.0074 - 0.0006, zs * 0.0074 + 0.0006, F)
+        car.cyl(PIN_R, -0.0075, 0.0075, F, 12).cyl(PIN_R * 0.5, -0.0062, 0.0062, F @ Matrix.Translation((*CA, 0)), 10)
     carrier = car.obj("Carrier", M_HUB); motor = car_mot.obj("FoldMotor", M_MOTOR)
     motor.parent = carrier
-    carrier.modifiers.new("Collision", 'COLLISION').settings.thickness_outer = 0.002
 
     # rib segments (bars + knuckles + pins + fabric posts), couplers (paired side plates), pushrods, runner
     parts = {}
@@ -185,24 +194,27 @@ def build(design, path):
             b.cyl(KNUCKLE_R, -SEG_W / 2, SEG_W / 2, n=16)
             if i < 2: b.cyl(PIN_R, -0.0075, 0.0075, Matrix.Translation((L[i], 0, 0)), 12)
             if i == 2: b.cyl(KNUCKLE_R, -SEG_W / 2, SEG_W / 2, Matrix.Translation((L[i], 0, 0)), 16)
-            if i == 0: b.cyl(PIN_R * 0.8, -0.0062, 0.0062, Matrix.Translation((-TAIL, 0, 0)), 10)
+            if i == 0: b.cyl(PIN_R * 0.5, -0.0062, 0.0062, Matrix.Translation((-TAIL, 0, 0)), 10)
             if i < 2:   # input crank boss for next four-bar (A pin)
-                b.box(L[i], L[i] + CA[0] + 0.003, CA[1] - 0.0028, 0, -SEG_W / 2, SEG_W / 2)
-                b.cyl(PIN_R * 0.8, -0.0062, 0.0062, Matrix.Translation((L[i] + CA[0], CA[1], 0)), 10)
+                b.box(L[i], L[i] + CA[0] + 0.0018, CA[1] - 0.0014, 0, -SEG_W / 2, SEG_W / 2)
+                b.cyl(PIN_R * 0.5, -0.0062, 0.0062, Matrix.Translation((L[i] + CA[0], CA[1], 0)), 10)
             if i > 0:   # output crank boss (B pin)
-                b.box(CB[0] - 0.003, CB[0] + 0.003, 0, CB[1] + 0.0028, -SEG_W / 2, SEG_W / 2)
-            for x in np.arange(0.012 if i == 0 else 0.008, L[i] - 0.004, 0.012):   # fabric posts on convex side
-                b.cyl(0.0012, SEG_H / 2, STAND - 0.0012, Matrix.Translation((x, 0, 0)) @ Matrix.Rotation(math.pi / 2, 4, 'X'), 8)
+                b.box(CB[0] - 0.0025, CB[0] + 0.0025, 0, CB[1] + 0.0025, -SEG_W / 2, SEG_W / 2)
             o = b.obj(f"Rib{k}_Seg{i}", M_AL); parts[o.name] = o
-            o.modifiers.new("Collision", 'COLLISION').settings.thickness_outer = 0.0015
+            o.modifiers.new("Collision", 'COLLISION').settings.thickness_outer = 0.0005
+            pc = MB()   # fabric clip posts on the convex side (child object, not a collider)
+            for x in clip_x(i):
+                pc.cyl(0.0012, SEG_H / 2, STAND - 0.0012, Matrix.Translation((x, 0, 0)) @ Matrix.Rotation(-math.pi / 2, 4, 'X'), 8)
+            pc.obj(f"Rib{k}_Clips{i}", M_ST).parent = o
         for i in range(2):
             Lc = float(np.linalg.norm(np.array([L[i], 0]) + CB - np.array(CA)))
             b = MB()
             for zs in (-1, 1):
                 z0 = zs * (0.0045 if i == 1 else 0.0062)
-                b.box(-0.003, Lc + 0.003, -0.0025, 0.0025, z0 - 0.0006, z0 + 0.0006)
-            b.cyl(PIN_R * 0.8, -0.0068, 0.0068, n=10).cyl(PIN_R * 0.8, -0.0068, 0.0068, Matrix.Translation((Lc, 0, 0)), 10)
-            parts[f"Rib{k}_Link{i}"] = b.obj(f"Rib{k}_Link{i}", M_ST)
+                b.box(-0.0025, Lc + 0.0025, -0.0014, 0.0014, z0 - 0.0006, z0 + 0.0006)
+            b.cyl(PIN_R * 0.5, -0.0068, 0.0068, n=10).cyl(PIN_R * 0.5, -0.0068, 0.0068, Matrix.Translation((Lc, 0, 0)), 10)
+            o = parts[f"Rib{k}_Link{i}"] = b.obj(f"Rib{k}_Link{i}", M_ST)
+            o.modifiers.new("Collision", 'COLLISION').settings.thickness_outer = 0.0005
         b = MB().cyl(0.0012, 0, ROD, Matrix.Rotation(math.pi / 2, 4, 'Y'), 8)
         for x in (0, ROD): b.cyl(0.0028, -0.002, 0.002, Matrix.Translation((x, 0, 0)), 12)
         parts[f"Rib{k}_Rod"] = b.obj(f"Rib{k}_Rod", M_ST)
@@ -251,27 +263,31 @@ def build(design, path):
     sc.frame_set(1)
 
     # ---------- fabric: pleated, scalloped disc; columns follow rib lines ----------
+    # rows are placed by distance s along the rib line, with crease rows exactly under joints J2 and J3
+    s0 = math.sqrt(R0 * R0 - rho * rho); r_of = lambda s_: math.sqrt(rho * rho + (s0 + s_) ** 2)
+    kn = [math.sqrt(FAB_IN ** 2 - rho * rho) - s0, L[0], L[0] + L[1], math.sqrt(FAB_R ** 2 - rho * rho) - s0]
+    ns = [max(2, round((b - a) / ROW)) for a, b in zip(kn, kn[1:])]
+    S = [kn[0]] + [a + (b - a) * (m + 1) / n for a, b, n in zip(kn, kn[1:], ns) for m in range(n)]
+    NR1, crow = len(S), (ns[0], ns[0] + ns[1])
     sec = NT // N_RIB; v, f, pin, crease, hook_of = [], [], [], [], []
     for j in range(NT):
-        u = (j % sec) / sec; Rt = FAB_R + LOBE * math.sin(math.pi * u) ** 2
+        u = (j % sec) / sec; lobe = LOBE * math.sin(math.pi * u) ** 2
         tri = 1 - abs(((j % (sec // 2)) / (sec // 4)) - 1)       # 0 at ribs and mid-sector valley, 1 at the two fins
-        for i in range(NRAD + 1):
-            r = FAB_IN + (Rt - FAB_IN) * i / NRAD
-            sk = min(max((SKIRT_R - r) / (SKIRT_R - FAB_IN), 0), 1)          # 1 at the clamp, 0 from SKIRT_R out
-            p = col_point(j, r) - W * (STAND + (-PLATE_Y - STAND) * sk ** 1.5 + PLEAT_K * max(r - SKIRT_R, 0) * tri)
+        for i in range(NR1):
+            sr = S[i] + (lobe * ((i - crow[1]) / ns[2]) ** 2 if i > crow[1] else 0); r = r_of(sr)
+            p = col_point(j, r) + W * (STAND + PLEAT_K * (r - FAB_IN) * tri)   # fins fold away from the ribs
             v.append(p); h = None
-            if i == 0: h = "Carrier"
-            elif j % sec == 0:
-                sr = math.sqrt(max(r * r - rho * rho, 0)) - math.sqrt(R0 * R0 - rho * rho)
-                if 0.006 < sr <= sum(L) - 0.002:
-                    ii = 0 if sr <= L[0] else (1 if sr <= L[0] + L[1] else 2)
-                    h = f"Rib{(j // sec) % N_RIB}_Seg{ii}"
-            hook_of.append(h); crease.append(j % (sec // 4) == 0 and j % sec != 0)
+            if j % sec == 0:
+                ii = 0 if sr <= L[0] else (1 if sr <= L[0] + L[1] else 2)
+                xl = sr - sum(L[:ii])
+                if clip_x(ii)[0] - 0.003 <= xl <= clip_x(ii)[-1] + 0.003: h = f"Rib{(j // sec) % N_RIB}_Seg{ii}"
+            hook_of.append(h); crease.append((j % (sec // 4) == 0 and j % sec != 0) or i in crow)
     for j in range(NT):
-        a_, b_ = j * (NRAD + 1), ((j + 1) % NT) * (NRAD + 1)
-        f += [(a_ + i, b_ + i, b_ + i + 1, a_ + i + 1) for i in range(NRAD)]
+        a_, b_ = j * NR1, ((j + 1) % NT) * NR1
+        f += [(a_ + i, b_ + i, b_ + i + 1, a_ + i + 1) for i in range(NR1 - 1)]
     fab = MB().add([tuple(p) for p in v], f).obj("Fabric", M_FAB); fab.data.shade_smooth()
-    gp, gfree, gb = (fab.vertex_groups.new(name=nm) for nm in ("pin", "free", "bend"))
+    gp, gfree, gb, gself = (fab.vertex_groups.new(name=nm) for nm in ("pin", "free", "bend", "selfcol"))
+    gself.add([vi for vi, p in enumerate(v) if (p - C).length > 0.075], 1.0, 'REPLACE')   # inner grid too dense for self collision
     for vi, (h, cr) in enumerate(zip(hook_of, crease)):
         (gp if h else gfree).add([vi], 1.0, 'REPLACE'); gb.add([vi], 0.0 if cr else 1.0, 'REPLACE')
     for nm in sorted(set(h for h in hook_of if h)):
@@ -280,19 +296,19 @@ def build(design, path):
         hm.matrix_inverse = tgt.matrix_world.inverted(); hm.vertex_indices_set(idx)
     area = sum(p.area for p in fab.data.polygons)
     cl = fab.modifiers.new("Cloth", 'CLOTH'); cs = cl.settings
-    cs.quality, cs.mass, cs.air_damping = 10, GSM / 1000 * area / len(v) * MASS_SCALE, 0.1
+    cs.quality, cs.mass, cs.air_damping = 16, GSM_PANEL / 1000 * area / len(v) * MASS_SCALE, 0.1
     cs.bending_model = 'ANGULAR'
     cs.tension_stiffness = cs.compression_stiffness = 2000.0; cs.shear_stiffness = 200.0
-    cs.bending_stiffness, cs.bending_stiffness_max, cs.vertex_group_bending = BEND_CREASE, BEND, "bend"
+    cs.bending_stiffness, cs.bending_stiffness_max, cs.vertex_group_bending = BEND_FAB, BEND_PANEL, "bend"
     cs.tension_damping = cs.compression_damping = cs.shear_damping = 10.0; cs.bending_damping = 2.0
     cs.vertex_group_mass, cs.pin_stiffness = "pin", 1.0
     cc = cl.collision_settings
-    cc.collision_quality, cc.distance_min, cc.use_self_collision, cc.self_distance_min = 4, 0.0015, True, 0.0015
-    cc.vertex_group_object_collisions = "free"
+    cc.collision_quality, cc.distance_min, cc.use_self_collision, cc.self_distance_min = 8, 0.001, True, 0.0012
+    cc.vertex_group_object_collisions, cc.vertex_group_self_collisions = "free", "selfcol"
     cl.point_cache.frame_start, cl.point_cache.frame_end = 1, sc.frame_end
     fab.modifiers.new("Solidify", 'SOLIDIFY').thickness = 0.0005
     fab.modifiers.new("Subsurf", 'SUBSURF').levels = 1
-    fab["fabric_mass_g"] = GSM * area
+    fab["mass_g"], fab["rows"] = GSM_PANEL * area, NR1
 
     # ---------- studio ----------
     w = bpy.data.worlds.new("World"); sc.world = w; w.use_nodes = True
@@ -320,7 +336,7 @@ def build(design, path):
     sc["design"] = design; sc["q1_closed_deg"] = math.degrees(q_cl); sc["runner_travel_mm"] = S_MAX * 1000
     sc["move_time_s"] = T_mv; sc["timeline"] = str(dict(close=t0, closed=t1, open_start=t2, open=t3, dur=DUR))
     print("KIN", design, f"q1_closed {math.degrees(q_cl):.1f} travel {S_MAX*1000:.2f}mm move {T_mv:.2f}s dur {DUR:.2f}s",
-          f"joints at closed {np.round(np.degrees(rib_pose(q_cl)[0]), 1)} fabric {GSM*area:.1f} g")
+          f"joints at closed {np.round(np.degrees(rib_pose(q_cl)[0]), 1)} canopy {GSM_PANEL*area:.1f} g bend panel {BEND_PANEL:.0f} rows {NR1}")
 
     bpy.ops.wm.save_as_mainfile(filepath=path)
     if os.environ.get("NOBAKE"): return
